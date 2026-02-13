@@ -83,6 +83,21 @@ public static class CommandRouter
             return true;
         }
 
+        if (cmd == "EVENTS")
+        {
+            int limit = 10;
+            string? acct = null;
+
+            if (parts.Length >= 2 && int.TryParse(parts[1], out int parsed) && parsed > 0)
+                limit = parsed;
+
+            if (parts.Length >= 3)
+                acct = parts[2];
+
+            response = exchange.GetLatestEvents(limit, acct);
+            return true;
+        }
+
         return false;
     }  
 }

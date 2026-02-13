@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text;
+using TradingServer.Core.Events;
 
 namespace TradingServer.Core;
 
@@ -106,14 +107,21 @@ public class Exchange
         // Save the order as soon as it gets an ID
         _db.InsertOrder(incoming);
 
+         _db.InsertEvent(
+            ExchangeEventType.OrderAccepted,
+            incoming.Account,
+            incoming.OrderId,
+            new { kind = "LIMIT", incoming.Side, incoming.Symbol, qty = incoming.OriginalQuantity, incoming.Price }
+        );
+
+
         OrderBook book = _books.GetOrAdd(incoming.Symbol, _ => new OrderBook(incoming.Symbol));
         MatchResult result = book.Match(incoming);
 
         // Save any trades that happened
-        foreach (var trade in result.Trades)
-        {
-            _db.InsertTrade(trade);
-        }
+        PersistTradesAndEvents(result);
+        
+
         // Incoming is open only if it still has remaining quantity
         if (incoming.RemainingQuantity > 0)
             _openOrders[incoming.OrderId] = incoming;
@@ -127,7 +135,7 @@ public class Exchange
         return result;
     }
    
-    public string CancelOrder(long orderId, string requesterAccount)
+    public string CancelOrder(long orderId, string account)
     {
         // Only allow cancel if it's currently open in memory
         if (!_openOrders.TryRemove(orderId, out var order))
@@ -141,16 +149,24 @@ public class Exchange
                 return $"ERROR: Order {orderId} not found in book (unexpected).\n";
         }
 
-        if (!order.Account.Equals(requesterAccount, StringComparison.OrdinalIgnoreCase))
+        if (!order.Account.Equals(account, StringComparison.OrdinalIgnoreCase))
         {
             // Put it back because it wasn't theirs
             _openOrders[orderId] = order;
-            return $"ERROR: Order {orderId} does not belong to {requesterAccount}.\n";
+            return $"ERROR: Order {orderId} does not belong to {account}.\n";
         }
 
 
         // Persist the cancellation
         _db.InsertCancellation(orderId);
+
+        _db.InsertEvent(
+            ExchangeEventType.OrderCanceled,
+            account,
+            orderId,
+            new { }
+        );
+
 
         return $"OK: Canceled Order {orderId}\n";
     }
@@ -306,12 +322,18 @@ public class Exchange
 
         // Persist the incoming market order like any other order
         _db.InsertOrder(incoming);
+        
+        _db.InsertEvent(
+            ExchangeEventType.OrderAccepted,
+            incoming.Account,
+            incoming.OrderId,
+            new { kind = "MARKET", incoming.Side, incoming.Symbol, qty = incoming.OriginalQuantity }
+        );
 
         OrderBook book = _books.GetOrAdd(incoming.Symbol, _ => new OrderBook(incoming.Symbol));
         MatchResult result = book.MatchMarket(incoming);
 
-        foreach (var trade in result.Trades)
-            _db.InsertTrade(trade);
+        PersistTradesAndEvents(result);
 
         // market orders never rest, so only track it as open if it somehow still has remaining (we will NOT keep it open)
         _openOrders.TryRemove(incoming.OrderId, out _);
@@ -327,11 +349,30 @@ public class Exchange
         incoming.OrderId = Interlocked.Increment(ref _nextOrderId);
         _db.InsertOrder(incoming);
 
+        _db.InsertEvent(
+            ExchangeEventType.OrderAccepted,
+            incoming.Account,
+            incoming.OrderId,
+            new { kind = "IOC", incoming.Side, incoming.Symbol, qty = incoming.OriginalQuantity, incoming.Price }
+        );
+
+
         OrderBook book = _books.GetOrAdd(incoming.Symbol, _ => new OrderBook(incoming.Symbol));
         MatchResult result = book.MatchIoc(incoming);
 
-        foreach (var trade in result.Trades)
-            _db.InsertTrade(trade);
+        if (incoming.RemainingQuantity > 0)
+        {
+            _db.InsertEvent(
+                ExchangeEventType.OrderPartialCanceled,
+                incoming.Account,
+                incoming.OrderId,
+                new { unfilled = incoming.RemainingQuantity }
+            );
+        }
+
+
+        PersistTradesAndEvents(result);
+
 
         // IOC never rests
         _openOrders.TryRemove(incoming.OrderId, out _);
@@ -347,12 +388,30 @@ public class Exchange
         incoming.OrderId = Interlocked.Increment(ref _nextOrderId);
         _db.InsertOrder(incoming);
 
+        _db.InsertEvent(
+            ExchangeEventType.OrderAccepted,
+            incoming.Account,
+            incoming.OrderId,
+            new { kind = "FOK", incoming.Side, incoming.Symbol, qty = incoming.OriginalQuantity, incoming.Price }
+        );
+
+
         OrderBook book = _books.GetOrAdd(incoming.Symbol, _ => new OrderBook(incoming.Symbol));
         MatchResult result = book.MatchFok(incoming);
 
+        if (result.Trades.Count == 0)
+        {
+            _db.InsertEvent(
+                ExchangeEventType.OrderKilled,
+                incoming.Account,
+                incoming.OrderId,
+                new { reason = "Not enough immediate liquidity to fully fill" }
+            );
+        }
+
         // If not fully fillable, MatchFok returns 0 trades and changes nothing
-        foreach (var trade in result.Trades)
-            _db.InsertTrade(trade);
+        PersistTradesAndEvents(result);
+
 
         // FOK never rests
         _openOrders.TryRemove(incoming.OrderId, out _);
@@ -362,6 +421,38 @@ public class Exchange
 
         return result;
     }
+    
+    public string GetLatestEvents(int limit, string? account = null)
+    {
+        var lines = _db.GetLatestEvents(limit, account);
+        if (lines.Count == 0) return "No events.\n";
+        return string.Join('\n', lines) + "\n";
+    }
+
+    private void PersistTradesAndEvents(MatchResult result)
+    {
+        foreach (var trade in result.Trades)
+        {
+            _db.InsertTrade(trade);
+
+            _db.InsertEvent(
+                ExchangeEventType.TradeExecuted,
+                null,
+                null,
+                new
+                {
+                    trade.Symbol,
+                    trade.Quantity,
+                    trade.Price,
+                    trade.BuyOrderId,
+                    trade.SellOrderId,
+                    trade.BuyerAccount,
+                    trade.SellerAccount
+                }
+            );
+        }
+}
+
 
 
 }

@@ -1,4 +1,7 @@
 using Microsoft.Data.Sqlite;
+using System.Text.Json;
+using TradingServer.Core.Events;
+
 
 namespace TradingServer.Core;
 
@@ -6,9 +9,14 @@ public class TradeDatabase
 {
     private readonly string _connectionString;
 
-    public TradeDatabase(string dbFilePath)
+    public TradeDatabase(string dbFileOrConnectionString)
     {
-        _connectionString = $"Data Source={dbFilePath}";
+        // If caller passes a full connection string, let them.
+        // Otherwise treat it as a file path.
+        _connectionString = dbFileOrConnectionString.Contains("Data Source=", StringComparison.OrdinalIgnoreCase)
+            ? dbFileOrConnectionString
+            : $"Data Source={dbFileOrConnectionString}";
+
         Initialize();
     }
     
@@ -89,6 +97,21 @@ public class TradeDatabase
         EnsureColumn(connection, "Orders", "Account", "TEXT");
         EnsureColumn(connection, "Trades", "BuyerAccount", "TEXT");
         EnsureColumn(connection, "Trades", "SellerAccount", "TEXT");
+        var createEvents = connection.CreateCommand();
+        
+        createEvents.CommandText =
+        @"
+        CREATE TABLE IF NOT EXISTS Events (
+            EventId INTEGER PRIMARY KEY AUTOINCREMENT,
+            Type TEXT NOT NULL,
+            CreatedUtc TEXT NOT NULL,
+            Account TEXT NULL,
+            OrderId INTEGER NULL,
+            DataJson TEXT NOT NULL
+        );
+        ";
+        createEvents.ExecuteNonQuery();
+
 
     }
 
@@ -389,6 +412,80 @@ public class TradeDatabase
         }
 
         return map;
+    }
+
+    public void InsertEvent(ExchangeEventType type, string? account, long? orderId, object data)
+    {
+        using var connection = new SqliteConnection(_connectionString);
+        connection.Open();
+
+        var cmd = connection.CreateCommand();
+        cmd.CommandText =
+        @"
+        INSERT INTO Events (Type, CreatedUtc, Account, OrderId, DataJson)
+        VALUES ($type, $utc, $acct, $orderId, $json);
+        ";
+
+        cmd.Parameters.AddWithValue("$type", type.ToString());
+        cmd.Parameters.AddWithValue("$utc", DateTime.UtcNow.ToString("o"));
+        cmd.Parameters.AddWithValue("$acct", (object?)account ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$orderId", (object?)orderId ?? DBNull.Value);
+
+        string json = JsonSerializer.Serialize(data);
+        cmd.Parameters.AddWithValue("$json", json);
+
+        cmd.ExecuteNonQuery();
+    }
+
+    public List<string> GetLatestEvents(int limit, string? accountFilter = null)
+    {
+        using var connection = new SqliteConnection(_connectionString);
+        connection.Open();
+
+        var cmd = connection.CreateCommand();
+
+        if (!string.IsNullOrWhiteSpace(accountFilter))
+        {
+            cmd.CommandText =
+            @"
+            SELECT EventId, Type, CreatedUtc, IFNULL(Account,'-'), IFNULL(OrderId,0), DataJson
+            FROM Events
+            WHERE Account = $acct
+            ORDER BY EventId DESC
+            LIMIT $limit;
+            ";
+            cmd.Parameters.AddWithValue("$acct", accountFilter);
+        }
+        else
+        {
+            cmd.CommandText =
+            @"
+            SELECT EventId, Type, CreatedUtc, IFNULL(Account,'-'), IFNULL(OrderId,0), DataJson
+            FROM Events
+            ORDER BY EventId DESC
+            LIMIT $limit;
+            ";
+        }
+
+        cmd.Parameters.AddWithValue("$limit", limit);
+
+        var lines = new List<string>();
+        using var reader = cmd.ExecuteReader();
+
+        while (reader.Read())
+        {
+            long eventId = reader.GetInt64(0);
+            string type = reader.GetString(1);
+            string utc = reader.GetString(2);
+            string acct = reader.GetString(3);
+            long oid = reader.GetInt64(4);
+            string json = reader.GetString(5);
+
+            string oidText = oid == 0 ? "-" : oid.ToString();
+            lines.Add($"EventId={eventId} {type} acct={acct} order={oidText} @ {utc} data={json}");
+        }
+
+        return lines;
     }
 
 
