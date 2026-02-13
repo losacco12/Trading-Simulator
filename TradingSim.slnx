@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="DbViewer/DbViewer.csproj" />
+  <Project Path="TradingClient/TradingClient.csproj" />
+  <Project Path="TradingServer.Tests/TradingServer.Tests.csproj" />
+  <Project Path="TradingServer/TradingServer.csproj" />
+</Solution>

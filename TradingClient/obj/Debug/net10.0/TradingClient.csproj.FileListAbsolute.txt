@@ -1,0 +1,14 @@
+C:\Users\markl\Projects\TradingSim\TradingClient\bin\Debug\net10.0\TradingClient.exe
+C:\Users\markl\Projects\TradingSim\TradingClient\bin\Debug\net10.0\TradingClient.deps.json
+C:\Users\markl\Projects\TradingSim\TradingClient\bin\Debug\net10.0\TradingClient.runtimeconfig.json
+C:\Users\markl\Projects\TradingSim\TradingClient\bin\Debug\net10.0\TradingClient.dll
+C:\Users\markl\Projects\TradingSim\TradingClient\bin\Debug\net10.0\TradingClient.pdb
+C:\Users\markl\Projects\TradingSim\TradingClient\obj\Debug\net10.0\TradingClient.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\markl\Projects\TradingSim\TradingClient\obj\Debug\net10.0\TradingClient.AssemblyInfoInputs.cache
+C:\Users\markl\Projects\TradingSim\TradingClient\obj\Debug\net10.0\TradingClient.AssemblyInfo.cs
+C:\Users\markl\Projects\TradingSim\TradingClient\obj\Debug\net10.0\TradingClient.csproj.CoreCompileInputs.cache
+C:\Users\markl\Projects\TradingSim\TradingClient\obj\Debug\net10.0\TradingClient.dll
+C:\Users\markl\Projects\TradingSim\TradingClient\obj\Debug\net10.0\refint\TradingClient.dll
+C:\Users\markl\Projects\TradingSim\TradingClient\obj\Debug\net10.0\TradingClient.pdb
+C:\Users\markl\Projects\TradingSim\TradingClient\obj\Debug\net10.0\TradingClient.genruntimeconfig.cache
+C:\Users\markl\Projects\TradingSim\TradingClient\obj\Debug\net10.0\ref\TradingClient.dll
