@@ -41,3 +41,4 @@ C:\Users\markl\Projects\TradingSim\DbViewer\obj\Debug\net10.0\refint\DbViewer.dl
 C:\Users\markl\Projects\TradingSim\DbViewer\obj\Debug\net10.0\DbViewer.pdb
 C:\Users\markl\Projects\TradingSim\DbViewer\obj\Debug\net10.0\DbViewer.genruntimeconfig.cache
 C:\Users\markl\Projects\TradingSim\DbViewer\obj\Debug\net10.0\ref\DbViewer.dll
+C:\Users\markl\Projects\TradingSim\DbViewer\obj\Debug\net10.0\DbViewer.sourcelink.json

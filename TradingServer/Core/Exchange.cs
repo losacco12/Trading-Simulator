@@ -322,4 +322,46 @@ public class Exchange
         return result;
     }
 
+    public MatchResult SubmitIoc(Order incoming)
+    {
+        incoming.OrderId = Interlocked.Increment(ref _nextOrderId);
+        _db.InsertOrder(incoming);
+
+        OrderBook book = _books.GetOrAdd(incoming.Symbol, _ => new OrderBook(incoming.Symbol));
+        MatchResult result = book.MatchIoc(incoming);
+
+        foreach (var trade in result.Trades)
+            _db.InsertTrade(trade);
+
+        // IOC never rests
+        _openOrders.TryRemove(incoming.OrderId, out _);
+
+        foreach (var filledId in result.FilledOrderIds)
+            _openOrders.TryRemove(filledId, out _);
+
+        return result;
+    }
+
+    public MatchResult SubmitFok(Order incoming)
+    {
+        incoming.OrderId = Interlocked.Increment(ref _nextOrderId);
+        _db.InsertOrder(incoming);
+
+        OrderBook book = _books.GetOrAdd(incoming.Symbol, _ => new OrderBook(incoming.Symbol));
+        MatchResult result = book.MatchFok(incoming);
+
+        // If not fully fillable, MatchFok returns 0 trades and changes nothing
+        foreach (var trade in result.Trades)
+            _db.InsertTrade(trade);
+
+        // FOK never rests
+        _openOrders.TryRemove(incoming.OrderId, out _);
+
+        foreach (var filledId in result.FilledOrderIds)
+            _openOrders.TryRemove(filledId, out _);
+
+        return result;
+    }
+
+
 }

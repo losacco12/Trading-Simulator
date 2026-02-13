@@ -125,6 +125,62 @@ static void HandleClient(TcpClient client, int clientId, Exchange exchange)
                 continue;
             }
 
+            if (raw.StartsWith("IOC", StringComparison.OrdinalIgnoreCase) ||
+                raw.StartsWith("FOK", StringComparison.OrdinalIgnoreCase))
+            {
+                if (string.IsNullOrWhiteSpace(sessionAccount))
+                {
+                    WriteResponse(writer, "ERROR: You must LOGIN first.\n");
+                    continue;
+                }
+
+                if (!TifOrderParser.TryParse(raw, out var tif, out var orderText, out var tifError))
+                {
+                    WriteResponse(writer, $"ERROR: {tifError}\n");
+                    continue;
+                }
+
+                if (!OrderParser.TryParseOrder(orderText, out Order? tifOrder, out string parseError))
+
+                {
+                    WriteResponse(writer, $"ERROR: {parseError}\n");
+                    continue;
+                }
+
+                tifOrder!.Account = sessionAccount;
+
+                MatchResult result = tif == TimeInForce.IOC
+                    ? exchange.SubmitIoc(tifOrder)
+                    : exchange.SubmitFok(tifOrder);
+
+                var sb = new StringBuilder();
+                sb.AppendLine($"OK: Accepted {tif} {tifOrder.Side} {tifOrder.Symbol} qty={tifOrder.OriginalQuantity} price={tifOrder.Price}");
+
+                if (result.Trades.Count == 0)
+                {
+                    if (tif == TimeInForce.IOC && tifOrder.RemainingQuantity > 0)
+                    sb.AppendLine($"CANCELED: Unfilled remainder qty={tifOrder.RemainingQuantity}");
+                    else
+                        sb.AppendLine("NO TRADES");
+                }
+                else
+                {
+                    foreach (var t in result.Trades)
+                    {
+                        sb.AppendLine($"TRADE: {t.Symbol} qty={t.Quantity} price={t.Price} ({t.BuyerAccount} BUY#{t.BuyOrderId} vs {t.SellerAccount} SELL#{t.SellOrderId})");
+                    }
+                }
+
+                if (tifOrder.RemainingQuantity > 0)
+                    sb.AppendLine($"CANCELED: Unfilled remainder qty={tifOrder.RemainingQuantity}");
+
+                sb.AppendLine($"BOOK: {result.BookSummary}");
+
+                WriteResponse(writer, sb.ToString());
+                continue;
+            }
+
+
 
             Console.WriteLine($"Client #{clientId} says: {raw}");
 
