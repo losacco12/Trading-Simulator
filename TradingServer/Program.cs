@@ -4,6 +4,8 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Globalization;
+using System.IO;
+
 
 
 
@@ -21,8 +23,11 @@ Console.WriteLine($"Server listening on port {port}.");
 int clientNumber = 0;
 
 // One shared exchange for all clients
-TradeDatabase db = new TradeDatabase("trading.db");
-Exchange exchange = new Exchange(db);
+string dbPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "trading.db"));
+Console.WriteLine("DB path: " + dbPath);
+
+TradeDatabase db = new TradeDatabase(dbPath);
+Exchange exchange = new Exchange(db, replayFromEvents: true);
 
 // Server continuous loop
 while (true)

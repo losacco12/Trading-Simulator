@@ -487,6 +487,68 @@ public class TradeDatabase
 
         return lines;
     }
+    
+    public List<(long EventId, string Type, string CreatedUtc, string? Account, long? OrderId, string DataJson)> GetAllEventsAsc()
+    {
+        using var connection = new SqliteConnection(_connectionString);
+        connection.Open();
+
+        var cmd = connection.CreateCommand();
+        cmd.CommandText = @"
+            SELECT EventId, Type, CreatedUtc, Account, OrderId, DataJson
+            FROM Events
+            ORDER BY EventId ASC;
+        ";
+
+        var rows = new List<(long, string, string, string?, long?, string)>();
+
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            long eventId = reader.GetInt64(0);
+            string type = reader.GetString(1);
+            string utc = reader.GetString(2);
+            string? acct = reader.IsDBNull(3) ? null : reader.GetString(3);
+            long? orderId = reader.IsDBNull(4) ? null : reader.GetInt64(4);
+            string json = reader.GetString(5);
+
+            rows.Add((eventId, type, utc, acct, orderId, json));
+        }
+
+        return rows;
+    }
+    public List<(long EventId, string Type, string CreatedUtc, string? Account, long? OrderId, string DataJson)> GetEventsAsc(int limit)
+    {
+        using var connection = new SqliteConnection(_connectionString);
+        connection.Open();
+
+        var cmd = connection.CreateCommand();
+        cmd.CommandText = @"
+            SELECT EventId, Type, CreatedUtc, Account, OrderId, DataJson
+            FROM Events
+            ORDER BY EventId ASC
+            LIMIT $limit;
+        ";
+        cmd.Parameters.AddWithValue("$limit", limit);
+
+        var rows = new List<(long, string, string, string?, long?, string)>();
+
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            long eventId = reader.GetInt64(0);
+            string type = reader.GetString(1);
+            string utc = reader.GetString(2);
+            string? acct = reader.IsDBNull(3) ? null : reader.GetString(3);
+            long? orderId = reader.IsDBNull(4) ? null : reader.GetInt64(4);
+            string json = reader.GetString(5);
+
+            rows.Add((eventId, type, utc, acct, orderId, json));
+        }
+
+        return rows;
+    }
+
 
 
 

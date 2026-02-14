@@ -268,146 +268,165 @@ public class OrderBook
         }
     }
 
-    public MatchResult MatchIoc(Order incoming)
-{
-    // IOC behaves like a LIMIT order but never rests.
-    // It fills whatever it can immediately, cancels the remainder.
-    return MatchLimitInternal(incoming, restIfUnfilled: false, requireFullFill: false);
-}
-
-public MatchResult MatchFok(Order incoming)
-{
-    // FOK: either full fill immediately, or no trades at all.
-    return MatchLimitInternal(incoming, restIfUnfilled: false, requireFullFill: true);
-}
-
-private MatchResult MatchLimitInternal(Order incoming, bool restIfUnfilled, bool requireFullFill)
-{
-    var result = new MatchResult();
-
-    lock (_lock)
+        public MatchResult MatchIoc(Order incoming)
     {
-        // For FOK we must verify fillability BEFORE modifying the book.
-        if (requireFullFill && !CanFullyFillLocked(incoming))
+        // IOC behaves like a LIMIT order but never rests.
+        // It fills whatever it can immediately, cancels the remainder.
+        return MatchLimitInternal(incoming, restIfUnfilled: false, requireFullFill: false);
+    }
+
+    public MatchResult MatchFok(Order incoming)
+    {
+        // FOK: either full fill immediately, or no trades at all.
+        return MatchLimitInternal(incoming, restIfUnfilled: false, requireFullFill: true);
+    }
+
+    private MatchResult MatchLimitInternal(Order incoming, bool restIfUnfilled, bool requireFullFill)
+    {
+        var result = new MatchResult();
+
+        lock (_lock)
         {
+            // For FOK we must verify fillability BEFORE modifying the book.
+            if (requireFullFill && !CanFullyFillLocked(incoming))
+            {
+                result.BookSummary = BuildSummary();
+                return result; // no trades, no changes
+            }
+
+            if (incoming.Side == OrderSide.Buy)
+            {
+                _sells.Sort((a, b) => a.Price.CompareTo(b.Price));
+                int i = 0;
+
+                while (incoming.RemainingQuantity > 0 && i < _sells.Count)
+                {
+                    Order sell = _sells[i];
+
+                    // LIMIT constraint
+                    if (sell.Price > incoming.Price)
+                        break;
+
+                    int tradeQty = Math.Min(incoming.RemainingQuantity, sell.RemainingQuantity);
+
+                    result.Trades.Add(new Trade(
+                        _symbol, tradeQty, sell.Price,
+                        incoming.OrderId, sell.OrderId,
+                        incoming.Account, sell.Account
+                    ));
+
+                    incoming.RemainingQuantity -= tradeQty;
+                    sell.RemainingQuantity -= tradeQty;
+
+                    if (sell.RemainingQuantity == 0)
+                    {
+                        result.FilledOrderIds.Add(sell.OrderId);
+                        _sells.RemoveAt(i);
+                        continue;
+                    }
+
+                    i++;
+                }
+
+                // Only normal limit orders rest; IOC/FOK never rests (we pass restIfUnfilled=false)
+                if (restIfUnfilled && incoming.RemainingQuantity > 0)
+                    _buys.Add(incoming);
+
+                if (incoming.RemainingQuantity == 0)
+                    result.FilledOrderIds.Add(incoming.OrderId);
+            }
+            else
+            {
+                _buys.Sort((a, b) => b.Price.CompareTo(a.Price));
+                int i = 0;
+
+                while (incoming.RemainingQuantity > 0 && i < _buys.Count)
+                {
+                    Order buy = _buys[i];
+
+                    // LIMIT constraint
+                    if (buy.Price < incoming.Price)
+                        break;
+
+                    int tradeQty = Math.Min(incoming.RemainingQuantity, buy.RemainingQuantity);
+
+                    result.Trades.Add(new Trade(
+                        _symbol, tradeQty, buy.Price,
+                        buy.OrderId, incoming.OrderId,
+                        buy.Account, incoming.Account
+                    ));
+
+                    incoming.RemainingQuantity -= tradeQty;
+                    buy.RemainingQuantity -= tradeQty;
+
+                    if (buy.RemainingQuantity == 0)
+                    {
+                        result.FilledOrderIds.Add(buy.OrderId);
+                        _buys.RemoveAt(i);
+                        continue;
+                    }
+
+                    i++;
+                }
+
+                if (restIfUnfilled && incoming.RemainingQuantity > 0)
+                    _sells.Add(incoming);
+
+                if (incoming.RemainingQuantity == 0)
+                    result.FilledOrderIds.Add(incoming.OrderId);
+            }
+
             result.BookSummary = BuildSummary();
-            return result; // no trades, no changes
+            return result;
         }
+    }
+
+    private bool CanFullyFillLocked(Order incoming)
+    {
+        int needed = incoming.RemainingQuantity;
 
         if (incoming.Side == OrderSide.Buy)
         {
-            _sells.Sort((a, b) => a.Price.CompareTo(b.Price));
-            int i = 0;
-
-            while (incoming.RemainingQuantity > 0 && i < _sells.Count)
+            // can buy from sells priced <= incoming.Price
+            foreach (var s in _sells.OrderBy(o => o.Price))
             {
-                Order sell = _sells[i];
-
-                // LIMIT constraint
-                if (sell.Price > incoming.Price)
-                    break;
-
-                int tradeQty = Math.Min(incoming.RemainingQuantity, sell.RemainingQuantity);
-
-                result.Trades.Add(new Trade(
-                    _symbol, tradeQty, sell.Price,
-                    incoming.OrderId, sell.OrderId,
-                    incoming.Account, sell.Account
-                ));
-
-                incoming.RemainingQuantity -= tradeQty;
-                sell.RemainingQuantity -= tradeQty;
-
-                if (sell.RemainingQuantity == 0)
-                {
-                    result.FilledOrderIds.Add(sell.OrderId);
-                    _sells.RemoveAt(i);
-                    continue;
-                }
-
-                i++;
+                if (s.Price > incoming.Price) break;
+                needed -= s.RemainingQuantity;
+                if (needed <= 0) return true;
             }
-
-            // Only normal limit orders rest; IOC/FOK never rests (we pass restIfUnfilled=false)
-            if (restIfUnfilled && incoming.RemainingQuantity > 0)
-                _buys.Add(incoming);
-
-            if (incoming.RemainingQuantity == 0)
-                result.FilledOrderIds.Add(incoming.OrderId);
+            return false;
         }
         else
         {
-            _buys.Sort((a, b) => b.Price.CompareTo(a.Price));
-            int i = 0;
-
-            while (incoming.RemainingQuantity > 0 && i < _buys.Count)
+            // can sell to buys priced >= incoming.Price
+            foreach (var b in _buys.OrderByDescending(o => o.Price))
             {
-                Order buy = _buys[i];
-
-                // LIMIT constraint
-                if (buy.Price < incoming.Price)
-                    break;
-
-                int tradeQty = Math.Min(incoming.RemainingQuantity, buy.RemainingQuantity);
-
-                result.Trades.Add(new Trade(
-                    _symbol, tradeQty, buy.Price,
-                    buy.OrderId, incoming.OrderId,
-                    buy.Account, incoming.Account
-                ));
-
-                incoming.RemainingQuantity -= tradeQty;
-                buy.RemainingQuantity -= tradeQty;
-
-                if (buy.RemainingQuantity == 0)
-                {
-                    result.FilledOrderIds.Add(buy.OrderId);
-                    _buys.RemoveAt(i);
-                    continue;
-                }
-
-                i++;
+                if (b.Price < incoming.Price) break;
+                needed -= b.RemainingQuantity;
+                if (needed <= 0) return true;
             }
-
-            if (restIfUnfilled && incoming.RemainingQuantity > 0)
-                _sells.Add(incoming);
-
-            if (incoming.RemainingQuantity == 0)
-                result.FilledOrderIds.Add(incoming.OrderId);
+            return false;
         }
-
-        result.BookSummary = BuildSummary();
-        return result;
     }
-}
-
-private bool CanFullyFillLocked(Order incoming)
-{
-    int needed = incoming.RemainingQuantity;
-
-    if (incoming.Side == OrderSide.Buy)
+    public List<long> GetRestingOrderIds()
     {
-        // can buy from sells priced <= incoming.Price
-        foreach (var s in _sells.OrderBy(o => o.Price))
+        lock (_lock)
         {
-            if (s.Price > incoming.Price) break;
-            needed -= s.RemainingQuantity;
-            if (needed <= 0) return true;
+            var ids = new List<long>(_buys.Count + _sells.Count);
+            ids.AddRange(_buys.Select(o => o.OrderId));
+            ids.AddRange(_sells.Select(o => o.OrderId));
+            return ids;
         }
-        return false;
     }
-    else
+
+    public bool ContainsOrder(long orderId)
     {
-        // can sell to buys priced >= incoming.Price
-        foreach (var b in _buys.OrderByDescending(o => o.Price))
+        lock (_lock)
         {
-            if (b.Price < incoming.Price) break;
-            needed -= b.RemainingQuantity;
-            if (needed <= 0) return true;
+            return _buys.Any(o => o.OrderId == orderId) || _sells.Any(o => o.OrderId == orderId);
         }
-        return false;
     }
-}
+
 
 }
 
