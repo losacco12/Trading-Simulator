@@ -578,6 +578,148 @@ public class Exchange
             }
         }
     }
+    
+    public string ReplayVerify(int limit = 20000)
+    {
+        // Build replay-local state from events
+        var replayState = BuildReplayState(limit);
+
+        // Build live state snapshot (no mutation)
+        var liveState = BuildLiveStateSnapshot();
+
+        // Compare + format
+        return ReplayVerifier.Compare(replayState, liveState).ToPrettyString();
+    }
+
+    private ReplayState BuildReplayState(int limit)
+    {
+        var state = new ReplayState();
+
+        var events = _db.GetEventsAsc(limit);
+
+        // Track all orders so trades can decrement remaining
+        var ordersById = new Dictionary<long, Order>();
+
+        void EnsureBook(string sym)
+        {
+            if (!state.BookRestingIds.ContainsKey(sym))
+                state.BookRestingIds[sym] = new HashSet<long>();
+        }
+
+        foreach (var e in events)
+        {
+            if (e.OrderId != null)
+                state.MaxSeenOrderId = Math.Max(state.MaxSeenOrderId, e.OrderId.Value);
+
+            if (e.Type.Equals(nameof(ExchangeEventType.OrderAccepted), StringComparison.OrdinalIgnoreCase))
+            {
+                if (e.OrderId == null) continue;
+
+                using var doc = JsonDocument.Parse(e.DataJson);
+                var root = doc.RootElement;
+
+                string kind = root.TryGetProperty("kind", out var k) ? GetAsString(k, "LIMIT") : "LIMIT";
+                string sideText = root.TryGetProperty("Side", out var s) ? GetAsString(s, "Buy") : "Buy";
+                string symbol = root.TryGetProperty("Symbol", out var sym) ? GetAsString(sym, "UNK") : "UNK";
+                int qty = root.TryGetProperty("qty", out var q) ? q.GetInt32() : 0;
+
+                decimal price = 0m;
+                if (root.TryGetProperty("Price", out var p) && p.ValueKind != JsonValueKind.Null)
+                    price = p.GetDecimal();
+
+                var side = sideText.Equals("Sell", StringComparison.OrdinalIgnoreCase) ? OrderSide.Sell : OrderSide.Buy;
+
+                var o = new Order(e.OrderId.Value, side, symbol, qty, price)
+                {
+                    Account = string.IsNullOrWhiteSpace(e.Account) ? "anonymous" : e.Account,
+                    RemainingQuantity = qty
+                };
+
+                ordersById[o.OrderId] = o;
+                state.RemainingQtyByOrderId[o.OrderId] = o.RemainingQuantity;
+
+                // Only LIMIT rests
+                if (kind.Equals("LIMIT", StringComparison.OrdinalIgnoreCase))
+                {
+                    EnsureBook(symbol);
+                    state.BookRestingIds[symbol].Add(o.OrderId);
+                    state.OpenOrderIds.Add(o.OrderId);
+                }
+            }
+            else if (e.Type.Equals(nameof(ExchangeEventType.TradeExecuted), StringComparison.OrdinalIgnoreCase))
+            {
+                using var doc = JsonDocument.Parse(e.DataJson);
+                var root = doc.RootElement;
+
+                long buyId = root.GetProperty("BuyOrderId").GetInt64();
+                long sellId = root.GetProperty("SellOrderId").GetInt64();
+                int fillQty = root.GetProperty("Quantity").GetInt32();
+
+                state.MaxSeenOrderId = Math.Max(state.MaxSeenOrderId, buyId);
+                state.MaxSeenOrderId = Math.Max(state.MaxSeenOrderId, sellId);
+
+                ApplyFillReplay(state, ordersById, buyId, fillQty);
+                ApplyFillReplay(state, ordersById, sellId, fillQty);
+            }
+            else if (
+                e.Type.Equals(nameof(ExchangeEventType.OrderCanceled), StringComparison.OrdinalIgnoreCase) ||
+                e.Type.Equals(nameof(ExchangeEventType.OrderPartialCanceled), StringComparison.OrdinalIgnoreCase))
+            {
+                if (e.OrderId == null) continue;
+
+                if (ordersById.TryGetValue(e.OrderId.Value, out var ord))
+                {
+                    state.OpenOrderIds.Remove(ord.OrderId);
+                    if (state.BookRestingIds.TryGetValue(ord.Symbol, out var set))
+                        set.Remove(ord.OrderId);
+                }
+            }
+        }
+
+        return state;
+    }
+
+    private ReplayState BuildLiveStateSnapshot()
+    {
+        var live = new ReplayState();
+
+        // open ids
+        foreach (var id in _openOrders.Keys)
+            live.OpenOrderIds.Add(id);
+
+        // books
+        foreach (var (sym, book) in _books)
+        {
+            live.BookRestingIds[sym] = new HashSet<long>(book.GetRestingOrderIds());
+        }
+
+        // remaining qty (optional but strong)
+        foreach (var kvp in _openOrders)
+            live.RemainingQtyByOrderId[kvp.Key] = kvp.Value.RemainingQuantity;
+
+        return live;
+    }
+
+    private static void ApplyFillReplay(ReplayState state, Dictionary<long, Order> ordersById, long orderId, int fillQty)
+    {
+        if (!ordersById.TryGetValue(orderId, out var o))
+            return;
+
+        o.RemainingQuantity -= fillQty;
+        if (o.RemainingQuantity < 0) o.RemainingQuantity = 0;
+
+        state.RemainingQtyByOrderId[orderId] = o.RemainingQuantity;
+
+        if (o.RemainingQuantity == 0)
+        {
+            // If it was a resting LIMIT, remove from open/books
+            if (state.OpenOrderIds.Remove(orderId))
+            {
+                if (state.BookRestingIds.TryGetValue(o.Symbol, out var set))
+                    set.Remove(orderId);
+            }
+        }
+    }
 
     private void ApplyFill(Dictionary<long, Order> ordersById, long orderId, int fillQty)
     {

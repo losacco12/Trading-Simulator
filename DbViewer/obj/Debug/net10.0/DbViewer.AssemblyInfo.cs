@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("DbViewer")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+c4d122476bf6ea6e540ff71b82dba435f4a7e34d")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+1f9d52ca40701b78548b167273ab6a7acbefe27d")]
 [assembly: System.Reflection.AssemblyProductAttribute("DbViewer")]
 [assembly: System.Reflection.AssemblyTitleAttribute("DbViewer")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

@@ -108,6 +108,16 @@ public static class CommandRouter
             return true;
         }
 
+        if (cmd == "REPLAYVERIFY")
+        {
+            int limit = 20000;
+            if (parts.Length == 2 && int.TryParse(parts[1], out int parsed) && parsed > 0)
+                limit = parsed;
+
+            response = exchange.ReplayVerify(limit);
+            return true;
+        }
+
 
         return false;
     }  
