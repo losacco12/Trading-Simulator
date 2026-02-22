@@ -1,12 +1,14 @@
 using TradingServer.Core;
+using TradingServer.Core.Metrics;
 
 namespace TradingServer.Protocol;
 
 public static class CommandRouter
 {
-    public static bool TryHandleCommand(string input, Exchange exchange, ref string? sessionAccount, out string response)
+    public static bool TryHandleCommand(string input, Exchange exchange, ref string? sessionAccount, out string response, MetricsCollector metrics)
     {
         response = "";
+        
 
         string[] parts = input.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length == 0) return false;
@@ -117,7 +119,13 @@ public static class CommandRouter
             response = exchange.ReplayVerify(limit);
             return true;
         }
-
+        
+        if (input.Equals("METRICS", StringComparison.OrdinalIgnoreCase))
+        {
+            var snap = metrics.Snapshot();
+            response = MetricsFormatter.Format(snap); // OR call your local FormatMetrics(snap)
+            return true;
+        }
 
         return false;
     }  

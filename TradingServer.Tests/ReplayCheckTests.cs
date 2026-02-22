@@ -1,6 +1,7 @@
 using Microsoft.Data.Sqlite;
 using TradingServer.Core;
 using TradingServer.Core.Events;
+using TradingServer.Core.Metrics;
 using Xunit;
 
 public class ReplayCheckTests
@@ -21,8 +22,9 @@ public class ReplayCheckTests
             null,
             new { Symbol="AAPL", Quantity=5, Price=100m, BuyOrderId=10L, SellOrderId=11L, BuyerAccount="A", SellerAccount="B" }
         );
-
-        var ex = new Exchange(db, replayFromEvents: true);
+        
+        var metrics = new MetricsCollector();
+        var ex = new Exchange(db, metrics, replayFromEvents: true);
 
         string report = ex.ReplayCheckExpanded(1000);
 

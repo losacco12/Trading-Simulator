@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("TradingServer.Tests")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+1f9d52ca40701b78548b167273ab6a7acbefe27d")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+b2d89cc5c14784f0a4d61b248e03ea0e1fc5e715")]
 [assembly: System.Reflection.AssemblyProductAttribute("TradingServer.Tests")]
 [assembly: System.Reflection.AssemblyTitleAttribute("TradingServer.Tests")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

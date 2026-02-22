@@ -3,6 +3,7 @@ using System.Text;
 using TradingServer.Core.Events;
 using System.Text.Json;
 using TradingServer.Core.Replay;
+using TradingServer.Core.Metrics;
 
 
 namespace TradingServer.Core;
@@ -15,10 +16,12 @@ public class Exchange
     private readonly TradeDatabase _db;
     private readonly ConcurrentDictionary<long, Order> _openOrders = new();
     private long _maxSeenOrderId = 0;
+    private readonly MetricsCollector _metrics;
 
-    public Exchange(TradeDatabase db, bool replayFromEvents = false)
+    public Exchange(TradeDatabase db, MetricsCollector metrics, bool replayFromEvents = false)
     {
         _db = db;
+        _metrics = metrics;
 
        if (replayFromEvents)
         {
@@ -120,6 +123,8 @@ public class Exchange
 
     public MatchResult Submit(Order incoming)
     {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        
         incoming.OrderId = Interlocked.Increment(ref _nextOrderId);
 
         // Save the order as soon as it gets an ID
@@ -132,6 +137,8 @@ public class Exchange
             new { kind = "LIMIT", incoming.Side, incoming.Symbol, qty = incoming.OriginalQuantity, incoming.Price }
         );
 
+         _metrics.IncOrdersAccepted();
+
 
         OrderBook book = _books.GetOrAdd(incoming.Symbol, _ => new OrderBook(incoming.Symbol));
         MatchResult result = book.Match(incoming);
@@ -139,6 +146,12 @@ public class Exchange
         // Save any trades that happened
         PersistTradesAndEvents(result);
         
+         if (result.Trades.Count > 0)
+        {
+            int volume = result.Trades.Sum(t => t.Quantity);
+            _metrics.IncTrades(result.Trades.Count, volume);
+        }
+
 
         // Incoming is open only if it still has remaining quantity
         if (incoming.RemainingQuantity > 0)
@@ -150,6 +163,8 @@ public class Exchange
         foreach (var filledId in result.FilledOrderIds)
             _openOrders.TryRemove(filledId, out _);
 
+        sw.Stop();
+        _metrics.ObserveMatchLatencyMs(sw.Elapsed.TotalMilliseconds);
         return result;
     }
    
@@ -336,6 +351,7 @@ public class Exchange
     
     public MatchResult SubmitMarket(Order incoming)
     {
+        
         incoming.OrderId = Interlocked.Increment(ref _nextOrderId);
 
         // Persist the incoming market order like any other order
@@ -348,23 +364,36 @@ public class Exchange
             new { kind = "MARKET", incoming.Side, incoming.Symbol, qty = incoming.OriginalQuantity }
         );
 
+        _metrics.IncOrdersAccepted();
+        
         OrderBook book = _books.GetOrAdd(incoming.Symbol, _ => new OrderBook(incoming.Symbol));
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         MatchResult result = book.MatchMarket(incoming);
+        sw.Stop();
+        _metrics.ObserveMatchLatencyMs(sw.Elapsed.TotalMilliseconds);
 
         PersistTradesAndEvents(result);
+
+         if (result.Trades.Count > 0)
+            {
+                int volume = result.Trades.Sum(t => t.Quantity);
+                _metrics.IncTrades(result.Trades.Count, volume);
+            }
 
         // market orders never rest, so only track it as open if it somehow still has remaining (we will NOT keep it open)
         _openOrders.TryRemove(incoming.OrderId, out _);
 
         foreach (var filledId in result.FilledOrderIds)
             _openOrders.TryRemove(filledId, out _);
-
+        
         return result;
     }
 
     public MatchResult SubmitIoc(Order incoming)
     {
+
         incoming.OrderId = Interlocked.Increment(ref _nextOrderId);
+
         _db.InsertOrder(incoming);
 
         _db.InsertEvent(
@@ -373,10 +402,16 @@ public class Exchange
             incoming.OrderId,
             new { kind = "IOC", incoming.Side, incoming.Symbol, qty = incoming.OriginalQuantity, incoming.Price }
         );
-
-
+        
+        _metrics.IncOrdersAccepted();
+        
         OrderBook book = _books.GetOrAdd(incoming.Symbol, _ => new OrderBook(incoming.Symbol));
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         MatchResult result = book.MatchIoc(incoming);
+        sw.Stop();
+        _metrics.ObserveMatchLatencyMs(sw.Elapsed.TotalMilliseconds);
+
+       
 
         if (incoming.RemainingQuantity > 0)
         {
@@ -391,19 +426,25 @@ public class Exchange
 
         PersistTradesAndEvents(result);
 
+        if (result.Trades.Count > 0)
+        {
+            int volume = result.Trades.Sum(t => t.Quantity);
+            _metrics.IncTrades(result.Trades.Count, volume);
+        }
 
         // IOC never rests
         _openOrders.TryRemove(incoming.OrderId, out _);
 
         foreach (var filledId in result.FilledOrderIds)
             _openOrders.TryRemove(filledId, out _);
-
+        
         return result;
     }
 
     public MatchResult SubmitFok(Order incoming)
     {
         incoming.OrderId = Interlocked.Increment(ref _nextOrderId);
+        
         _db.InsertOrder(incoming);
 
         _db.InsertEvent(
@@ -413,9 +454,13 @@ public class Exchange
             new { kind = "FOK", incoming.Side, incoming.Symbol, qty = incoming.OriginalQuantity, incoming.Price }
         );
 
+        _metrics.IncOrdersAccepted();
 
         OrderBook book = _books.GetOrAdd(incoming.Symbol, _ => new OrderBook(incoming.Symbol));
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         MatchResult result = book.MatchFok(incoming);
+        sw.Stop();
+        _metrics.ObserveMatchLatencyMs(sw.Elapsed.TotalMilliseconds);
 
         if (result.Trades.Count == 0)
         {
@@ -429,7 +474,12 @@ public class Exchange
 
         // If not fully fillable, MatchFok returns 0 trades and changes nothing
         PersistTradesAndEvents(result);
-
+       
+        if (result.Trades.Count > 0)
+            {
+                int volume = result.Trades.Sum(t => t.Quantity);
+                _metrics.IncTrades(result.Trades.Count, volume);
+            }
 
         // FOK never rests
         _openOrders.TryRemove(incoming.OrderId, out _);

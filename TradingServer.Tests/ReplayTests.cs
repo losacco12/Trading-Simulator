@@ -1,6 +1,7 @@
 using Microsoft.Data.Sqlite;
 using TradingServer.Core;
 using TradingServer.Core.Events;
+using TradingServer.Core.Metrics;
 using Xunit;
 
 public class ReplayTests
@@ -19,7 +20,8 @@ public class ReplayTests
             new { kind = "LIMIT", Side = "Buy", Symbol = "AAPL", qty = 10, Price = 100m });
 
         // No trades, no cancels => should be resting
-        var ex = new Exchange(db, replayFromEvents: true);
+        var metrics = new MetricsCollector();
+        var ex = new Exchange(db, metrics, replayFromEvents: true);
 
         string book = ex.GetBook("AAPL");
 
@@ -48,7 +50,8 @@ public class ReplayTests
         db.InsertEvent(ExchangeEventType.TradeExecuted, null, null,
             new { Symbol = "AAPL", Quantity = 5, Price = 100m, BuyOrderId = 3L, SellOrderId = 2L, BuyerAccount = "Alice", SellerAccount = "Bob" });
 
-        var ex = new Exchange(db, replayFromEvents: true);
+        var metrics = new MetricsCollector();
+        var ex = new Exchange(db, metrics, replayFromEvents: true);
 
         // SELL#2 should be gone (filled)
         string book = ex.GetBook("AAPL");
@@ -68,7 +71,8 @@ public class ReplayTests
         db.InsertEvent(ExchangeEventType.OrderAccepted, "Alice", 50,
             new { kind = "MARKET", Side = "Buy", Symbol = "AAPL", qty = 1 });
 
-        var ex = new Exchange(db, replayFromEvents: true);
+        var metrics = new MetricsCollector();
+        var ex = new Exchange(db, metrics, replayFromEvents: true);
 
         // Force an actual submit to see what ID it assigns next:
         var o = new Order(0, OrderSide.Buy, "AAPL", 1, 100m) { Account = "Alice" };
@@ -93,8 +97,9 @@ public class ReplayTests
             50,
             new { kind = "MARKET", Side = "Buy", Symbol = "AAPL", qty = 1 }
         );
-
-        var ex = new Exchange(db, replayFromEvents: true);
+        
+        var metrics = new MetricsCollector();
+        var ex = new Exchange(db, metrics, replayFromEvents: true);
 
         // Submit a new limit order and ensure it gets OrderId=51
         var next = new Order(0, OrderSide.Buy, "AAPL", 1, 100m) { Account = "Alice" };
