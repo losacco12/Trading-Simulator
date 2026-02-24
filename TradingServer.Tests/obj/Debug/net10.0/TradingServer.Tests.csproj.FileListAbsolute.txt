@@ -128,3 +128,4 @@ C:\Users\markl\Projects\TradingSim\TradingServer.Tests\obj\Debug\net10.0\refint\
 C:\Users\markl\Projects\TradingSim\TradingServer.Tests\obj\Debug\net10.0\TradingServer.Tests.pdb
 C:\Users\markl\Projects\TradingSim\TradingServer.Tests\obj\Debug\net10.0\TradingServer.Tests.genruntimeconfig.cache
 C:\Users\markl\Projects\TradingSim\TradingServer.Tests\obj\Debug\net10.0\ref\TradingServer.Tests.dll
+C:\Users\markl\Projects\TradingSim\TradingServer.Tests\obj\Debug\net10.0\TradingServer.Tests.sourcelink.json

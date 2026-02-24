@@ -12,3 +12,4 @@ C:\Users\markl\Projects\TradingSim\TradingClient\obj\Debug\net10.0\refint\Tradin
 C:\Users\markl\Projects\TradingSim\TradingClient\obj\Debug\net10.0\TradingClient.pdb
 C:\Users\markl\Projects\TradingSim\TradingClient\obj\Debug\net10.0\TradingClient.genruntimeconfig.cache
 C:\Users\markl\Projects\TradingSim\TradingClient\obj\Debug\net10.0\ref\TradingClient.dll
+C:\Users\markl\Projects\TradingSim\TradingClient\obj\Debug\net10.0\TradingClient.sourcelink.json

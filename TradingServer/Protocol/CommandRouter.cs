@@ -1,12 +1,14 @@
 using TradingServer.Core;
+using TradingServer.Core.Metrics;
 
 namespace TradingServer.Protocol;
 
 public static class CommandRouter
 {
-    public static bool TryHandleCommand(string input, Exchange exchange, ref string? sessionAccount, out string response)
+    public static bool TryHandleCommand(string input, Exchange exchange, ref string? sessionAccount, out string response, MetricsCollector metrics, Action<string, string>? publishMd = null)
     {
         response = "";
+        
 
         string[] parts = input.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length == 0) return false;
@@ -48,7 +50,7 @@ public static class CommandRouter
                 return true;
             }
 
-            response = exchange.CancelOrder(id, sessionAccount);
+            response = exchange.CancelOrder(id, sessionAccount!, publishMd);
             return true;
         }
 
@@ -80,6 +82,48 @@ public static class CommandRouter
             }
 
             response = exchange.GetPnl(sessionAccount);
+            return true;
+        }
+
+        if (cmd == "EVENTS")
+        {
+            int limit = 10;
+            string? acct = null;
+
+            if (parts.Length >= 2 && int.TryParse(parts[1], out int parsed) && parsed > 0)
+                limit = parsed;
+
+            if (parts.Length >= 3)
+                acct = parts[2];
+
+            response = exchange.GetLatestEvents(limit, acct);
+            return true;
+        }
+
+        if (cmd == "REPLAYCHECK")
+        {
+            int limit = 20000;
+            if (parts.Length == 2 && int.TryParse(parts[1], out int parsed) && parsed > 0)
+                limit = parsed;
+
+            response = exchange.ReplayCheckExpanded(limit);
+            return true;
+        }
+
+        if (cmd == "REPLAYVERIFY")
+        {
+            int limit = 20000;
+            if (parts.Length == 2 && int.TryParse(parts[1], out int parsed) && parsed > 0)
+                limit = parsed;
+
+            response = exchange.ReplayVerify(limit);
+            return true;
+        }
+        
+        if (input.Equals("METRICS", StringComparison.OrdinalIgnoreCase))
+        {
+            var snap = metrics.Snapshot();
+            response = MetricsFormatter.Format(snap); // OR call your local FormatMetrics(snap)
             return true;
         }
 
