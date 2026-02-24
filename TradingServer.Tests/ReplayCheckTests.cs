@@ -2,6 +2,7 @@ using Microsoft.Data.Sqlite;
 using TradingServer.Core;
 using TradingServer.Core.Events;
 using TradingServer.Core.Metrics;
+using TradingServer.Core.MarketData;
 using Xunit;
 
 public class ReplayCheckTests
@@ -24,7 +25,8 @@ public class ReplayCheckTests
         );
         
         var metrics = new MetricsCollector();
-        var ex = new Exchange(db, metrics, replayFromEvents: true);
+        var marketData = new MarketDataBroadcaster();
+        var ex = new Exchange(db, metrics, marketData, replayFromEvents: true);
 
         string report = ex.ReplayCheckExpanded(1000);
 

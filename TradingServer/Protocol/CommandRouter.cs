@@ -5,7 +5,7 @@ namespace TradingServer.Protocol;
 
 public static class CommandRouter
 {
-    public static bool TryHandleCommand(string input, Exchange exchange, ref string? sessionAccount, out string response, MetricsCollector metrics)
+    public static bool TryHandleCommand(string input, Exchange exchange, ref string? sessionAccount, out string response, MetricsCollector metrics, Action<string, string>? publishMd = null)
     {
         response = "";
         
@@ -50,7 +50,7 @@ public static class CommandRouter
                 return true;
             }
 
-            response = exchange.CancelOrder(id, sessionAccount);
+            response = exchange.CancelOrder(id, sessionAccount!, publishMd);
             return true;
         }
 

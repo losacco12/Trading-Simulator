@@ -163,6 +163,7 @@ public class OrderBook
             return result;
         }
     }
+    
     private string BuildSummary()
     {
         int buyCount = _buys.Count;
@@ -172,6 +173,14 @@ public class OrderBook
         decimal bestSell = _sells.Count == 0 ? 0 : _sells.Min(o => o.Price);
 
         return $"{_symbol} buys={buyCount} sells={sellCount} bestBuy={bestBuy} bestSell={bestSell}";
+    }
+    
+    public string GetSummary()
+    {
+        lock (_lock)
+        {
+            return BuildSummary();
+        }
     }
     
     public bool RemoveOrder(long orderId)

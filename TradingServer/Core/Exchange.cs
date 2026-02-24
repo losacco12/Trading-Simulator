@@ -4,6 +4,7 @@ using TradingServer.Core.Events;
 using System.Text.Json;
 using TradingServer.Core.Replay;
 using TradingServer.Core.Metrics;
+using TradingServer.Core.MarketData;
 
 
 namespace TradingServer.Core;
@@ -17,11 +18,17 @@ public class Exchange
     private readonly ConcurrentDictionary<long, Order> _openOrders = new();
     private long _maxSeenOrderId = 0;
     private readonly MetricsCollector _metrics;
+    private readonly MarketDataBroadcaster _marketData;
 
-    public Exchange(TradeDatabase db, MetricsCollector metrics, bool replayFromEvents = false)
+    public Exchange(
+        TradeDatabase db,
+        MetricsCollector metrics,
+        MarketDataBroadcaster marketData,
+        bool replayFromEvents = false)
     {
         _db = db;
         _metrics = metrics;
+        _marketData = marketData;
 
        if (replayFromEvents)
         {
@@ -121,7 +128,7 @@ public class Exchange
         return book.GetDetailedBook();
     }
 
-    public MatchResult Submit(Order incoming)
+    public MatchResult Submit(Order incoming, Action<string, string>? publishMd = null)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
         
@@ -161,56 +168,216 @@ public class Exchange
 
         // Any resting orders fully filled should be removed from open tracking
         foreach (var filledId in result.FilledOrderIds)
-            _openOrders.TryRemove(filledId, out _);
+           _openOrders.TryRemove(filledId, out _);
+
+        foreach (var t in result.Trades)
+            publishMd?.Invoke(t.Symbol, $"TRADE {t.Symbol} {t.Quantity} {t.Price}");
+
+        publishMd?.Invoke(incoming.Symbol, $"BOOK {incoming.Symbol} {result.BookSummary}");
 
         sw.Stop();
         _metrics.ObserveMatchLatencyMs(sw.Elapsed.TotalMilliseconds);
         return result;
     }
    
-    public string CancelOrder(long orderId, string account)
+    public string CancelOrder(long orderId, string account, Action<string, string>? publishMd = null)
     {
-        // Only allow cancel if it's currently open in memory
-        if (!_openOrders.TryRemove(orderId, out var order))
+        // Must exist as open
+        if (!_openOrders.TryGetValue(orderId, out var order))
             return $"ERROR: Order {orderId} is not open (already filled, canceled, or unknown).\n";
 
-        // Remove from the order book
+        // Ownership BEFORE mutating state
+        if (!order.Account.Equals(account, StringComparison.OrdinalIgnoreCase))
+            return $"ERROR: Order {orderId} does not belong to {account}.\n";
+
+        // Mutate
+        _openOrders.TryRemove(orderId, out _);
+
         if (_books.TryGetValue(order.Symbol, out var book))
         {
             bool removed = book.RemoveOrder(orderId);
             if (!removed)
                 return $"ERROR: Order {orderId} not found in book (unexpected).\n";
-        }
 
-        if (!order.Account.Equals(account, StringComparison.OrdinalIgnoreCase))
+            // Publish full book summary
+            publishMd?.Invoke(order.Symbol, $"BOOK {order.Symbol} {book.GetSummary()}");
+        }
+        else
         {
-            // Put it back because it wasn't theirs
-            _openOrders[orderId] = order;
-            return $"ERROR: Order {orderId} does not belong to {account}.\n";
+            publishMd?.Invoke(order.Symbol, $"BOOK {order.Symbol} (no book)");
         }
 
-
-        // Persist the cancellation
         _db.InsertCancellation(orderId);
-
-        _db.InsertEvent(
-            ExchangeEventType.OrderCanceled,
-            account,
-            orderId,
-            new { }
-        );
-
+        _db.InsertEvent(ExchangeEventType.OrderCanceled, account, orderId, new { });
 
         return $"OK: Canceled Order {orderId}\n";
     }
     
-    public string GetPositions(string account)
+   
+    
+    public MatchResult SubmitMarket(Order incoming, Action<string, string>? publishMd = null)
+    {
+        
+        incoming.OrderId = Interlocked.Increment(ref _nextOrderId);
+
+        // Persist the incoming market order like any other order
+        _db.InsertOrder(incoming);
+        
+        _db.InsertEvent(
+            ExchangeEventType.OrderAccepted,
+            incoming.Account,
+            incoming.OrderId,
+            new { kind = "MARKET", incoming.Side, incoming.Symbol, qty = incoming.OriginalQuantity }
+        );
+
+        _metrics.IncOrdersAccepted();
+        
+        OrderBook book = _books.GetOrAdd(incoming.Symbol, _ => new OrderBook(incoming.Symbol));
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        MatchResult result = book.MatchMarket(incoming);
+        sw.Stop();
+        _metrics.ObserveMatchLatencyMs(sw.Elapsed.TotalMilliseconds);
+
+        PersistTradesAndEvents(result);
+
+         if (result.Trades.Count > 0)
+            {
+                int volume = result.Trades.Sum(t => t.Quantity);
+                _metrics.IncTrades(result.Trades.Count, volume);
+            }
+
+        // market orders never rest, so only track it as open if it somehow still has remaining (we will NOT keep it open)
+        _openOrders.TryRemove(incoming.OrderId, out _);
+
+        foreach (var filledId in result.FilledOrderIds)
+            _openOrders.TryRemove(filledId, out _);
+
+        foreach (var t in result.Trades)
+            publishMd?.Invoke(t.Symbol, $"TRADE {t.Symbol} {t.Quantity} {t.Price}");
+
+        publishMd?.Invoke(incoming.Symbol, $"BOOK {incoming.Symbol} {result.BookSummary}");
+        
+        return result;
+    }
+
+    public MatchResult SubmitIoc(Order incoming, Action<string, string>? publishMd = null)
+    {
+
+        incoming.OrderId = Interlocked.Increment(ref _nextOrderId);
+
+        _db.InsertOrder(incoming);
+
+        _db.InsertEvent(
+            ExchangeEventType.OrderAccepted,
+            incoming.Account,
+            incoming.OrderId,
+            new { kind = "IOC", incoming.Side, incoming.Symbol, qty = incoming.OriginalQuantity, incoming.Price }
+        );
+        
+        _metrics.IncOrdersAccepted();
+        
+        OrderBook book = _books.GetOrAdd(incoming.Symbol, _ => new OrderBook(incoming.Symbol));
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        MatchResult result = book.MatchIoc(incoming);
+        sw.Stop();
+        _metrics.ObserveMatchLatencyMs(sw.Elapsed.TotalMilliseconds);
+
+       
+
+        if (incoming.RemainingQuantity > 0)
+        {
+            _db.InsertEvent(
+                ExchangeEventType.OrderPartialCanceled,
+                incoming.Account,
+                incoming.OrderId,
+                new { unfilled = incoming.RemainingQuantity }
+            );
+        }
+
+
+        PersistTradesAndEvents(result);
+
+        if (result.Trades.Count > 0)
+        {
+            int volume = result.Trades.Sum(t => t.Quantity);
+            _metrics.IncTrades(result.Trades.Count, volume);
+        }
+
+        // IOC never rests
+        _openOrders.TryRemove(incoming.OrderId, out _);
+
+        foreach (var filledId in result.FilledOrderIds)
+            _openOrders.TryRemove(filledId, out _);
+
+        foreach (var t in result.Trades)
+            publishMd?.Invoke(t.Symbol, $"TRADE {t.Symbol} {t.Quantity} {t.Price}");
+
+        publishMd?.Invoke(incoming.Symbol, $"BOOK {incoming.Symbol} {result.BookSummary}");
+        
+        return result;
+    }
+
+    public MatchResult SubmitFok(Order incoming, Action<string, string>? publishMd = null)
+    {
+        incoming.OrderId = Interlocked.Increment(ref _nextOrderId);
+        
+        _db.InsertOrder(incoming);
+
+        _db.InsertEvent(
+            ExchangeEventType.OrderAccepted,
+            incoming.Account,
+            incoming.OrderId,
+            new { kind = "FOK", incoming.Side, incoming.Symbol, qty = incoming.OriginalQuantity, incoming.Price }
+        );
+
+        _metrics.IncOrdersAccepted();
+
+        OrderBook book = _books.GetOrAdd(incoming.Symbol, _ => new OrderBook(incoming.Symbol));
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        MatchResult result = book.MatchFok(incoming);
+        sw.Stop();
+        _metrics.ObserveMatchLatencyMs(sw.Elapsed.TotalMilliseconds);
+
+        if (result.Trades.Count == 0)
+        {
+            _db.InsertEvent(
+                ExchangeEventType.OrderKilled,
+                incoming.Account,
+                incoming.OrderId,
+                new { reason = "Not enough immediate liquidity to fully fill" }
+            );
+        }
+
+        // If not fully fillable, MatchFok returns 0 trades and changes nothing
+        PersistTradesAndEvents(result);
+       
+        if (result.Trades.Count > 0)
+            {
+                int volume = result.Trades.Sum(t => t.Quantity);
+                _metrics.IncTrades(result.Trades.Count, volume);
+            }
+
+        // FOK never rests
+        _openOrders.TryRemove(incoming.OrderId, out _);
+
+        foreach (var filledId in result.FilledOrderIds)
+            _openOrders.TryRemove(filledId, out _);
+
+        foreach (var t in result.Trades)
+            publishMd?.Invoke(t.Symbol, $"TRADE {t.Symbol} {t.Quantity} {t.Price}");
+
+        publishMd?.Invoke(incoming.Symbol, $"BOOK {incoming.Symbol} {result.BookSummary}");
+
+        return result;
+    }
+
+     public string GetPositions(string account)
     {
         var lines = _db.GetPositions(account);
         return "=== POSITIONS ===\n" + string.Join('\n', lines) + "\n";
     }
 
-    public string GetPnl(string account)
+     public string GetPnl(string account)
     {
         // Average-cost method per symbol:
         // - Track position (shares)
@@ -349,147 +516,6 @@ public class Exchange
         return sb.ToString();
     }
     
-    public MatchResult SubmitMarket(Order incoming)
-    {
-        
-        incoming.OrderId = Interlocked.Increment(ref _nextOrderId);
-
-        // Persist the incoming market order like any other order
-        _db.InsertOrder(incoming);
-        
-        _db.InsertEvent(
-            ExchangeEventType.OrderAccepted,
-            incoming.Account,
-            incoming.OrderId,
-            new { kind = "MARKET", incoming.Side, incoming.Symbol, qty = incoming.OriginalQuantity }
-        );
-
-        _metrics.IncOrdersAccepted();
-        
-        OrderBook book = _books.GetOrAdd(incoming.Symbol, _ => new OrderBook(incoming.Symbol));
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        MatchResult result = book.MatchMarket(incoming);
-        sw.Stop();
-        _metrics.ObserveMatchLatencyMs(sw.Elapsed.TotalMilliseconds);
-
-        PersistTradesAndEvents(result);
-
-         if (result.Trades.Count > 0)
-            {
-                int volume = result.Trades.Sum(t => t.Quantity);
-                _metrics.IncTrades(result.Trades.Count, volume);
-            }
-
-        // market orders never rest, so only track it as open if it somehow still has remaining (we will NOT keep it open)
-        _openOrders.TryRemove(incoming.OrderId, out _);
-
-        foreach (var filledId in result.FilledOrderIds)
-            _openOrders.TryRemove(filledId, out _);
-        
-        return result;
-    }
-
-    public MatchResult SubmitIoc(Order incoming)
-    {
-
-        incoming.OrderId = Interlocked.Increment(ref _nextOrderId);
-
-        _db.InsertOrder(incoming);
-
-        _db.InsertEvent(
-            ExchangeEventType.OrderAccepted,
-            incoming.Account,
-            incoming.OrderId,
-            new { kind = "IOC", incoming.Side, incoming.Symbol, qty = incoming.OriginalQuantity, incoming.Price }
-        );
-        
-        _metrics.IncOrdersAccepted();
-        
-        OrderBook book = _books.GetOrAdd(incoming.Symbol, _ => new OrderBook(incoming.Symbol));
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        MatchResult result = book.MatchIoc(incoming);
-        sw.Stop();
-        _metrics.ObserveMatchLatencyMs(sw.Elapsed.TotalMilliseconds);
-
-       
-
-        if (incoming.RemainingQuantity > 0)
-        {
-            _db.InsertEvent(
-                ExchangeEventType.OrderPartialCanceled,
-                incoming.Account,
-                incoming.OrderId,
-                new { unfilled = incoming.RemainingQuantity }
-            );
-        }
-
-
-        PersistTradesAndEvents(result);
-
-        if (result.Trades.Count > 0)
-        {
-            int volume = result.Trades.Sum(t => t.Quantity);
-            _metrics.IncTrades(result.Trades.Count, volume);
-        }
-
-        // IOC never rests
-        _openOrders.TryRemove(incoming.OrderId, out _);
-
-        foreach (var filledId in result.FilledOrderIds)
-            _openOrders.TryRemove(filledId, out _);
-        
-        return result;
-    }
-
-    public MatchResult SubmitFok(Order incoming)
-    {
-        incoming.OrderId = Interlocked.Increment(ref _nextOrderId);
-        
-        _db.InsertOrder(incoming);
-
-        _db.InsertEvent(
-            ExchangeEventType.OrderAccepted,
-            incoming.Account,
-            incoming.OrderId,
-            new { kind = "FOK", incoming.Side, incoming.Symbol, qty = incoming.OriginalQuantity, incoming.Price }
-        );
-
-        _metrics.IncOrdersAccepted();
-
-        OrderBook book = _books.GetOrAdd(incoming.Symbol, _ => new OrderBook(incoming.Symbol));
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        MatchResult result = book.MatchFok(incoming);
-        sw.Stop();
-        _metrics.ObserveMatchLatencyMs(sw.Elapsed.TotalMilliseconds);
-
-        if (result.Trades.Count == 0)
-        {
-            _db.InsertEvent(
-                ExchangeEventType.OrderKilled,
-                incoming.Account,
-                incoming.OrderId,
-                new { reason = "Not enough immediate liquidity to fully fill" }
-            );
-        }
-
-        // If not fully fillable, MatchFok returns 0 trades and changes nothing
-        PersistTradesAndEvents(result);
-       
-        if (result.Trades.Count > 0)
-            {
-                int volume = result.Trades.Sum(t => t.Quantity);
-                _metrics.IncTrades(result.Trades.Count, volume);
-            }
-
-        // FOK never rests
-        _openOrders.TryRemove(incoming.OrderId, out _);
-
-        foreach (var filledId in result.FilledOrderIds)
-            _openOrders.TryRemove(filledId, out _);
-
-        return result;
-    }
-    
     public string GetLatestEvents(int limit, string? account = null)
     {
         var lines = _db.GetLatestEvents(limit, account);
@@ -519,11 +545,12 @@ public class Exchange
                 }
             );
         }
-    } 
+    }
+     
 
     private long GetMaxOrderIdFromOpenState()
     {
-        // We want next OrderId to be >= any order id we've seen.
+        // Want next OrderId to be >= any order id we've seen.
         // If open orders is empty, just return 0 and it will increment from 1.
         return _openOrders.Count == 0 ? 0 : _openOrders.Keys.Max();
     }  
@@ -567,7 +594,7 @@ public class Exchange
                 decimal price = 0m;
                 if (root.TryGetProperty("Price", out var p))
                 {
-                    // your serializer writes decimal as JSON number
+                    // serializer writes decimal as JSON number
                     price = p.GetDecimal();
                 }
 
@@ -743,7 +770,7 @@ public class Exchange
             live.BookRestingIds[sym] = new HashSet<long>(book.GetRestingOrderIds());
         }
 
-        // remaining qty (optional but strong)
+        // remaining qty
         foreach (var kvp in _openOrders)
             live.RemainingQtyByOrderId[kvp.Key] = kvp.Value.RemainingQuantity;
 
